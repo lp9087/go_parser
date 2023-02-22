@@ -86,12 +86,13 @@ func insertDBExtremistMaterials(dbConfig *pgx.ConnConfig, toCreate []ToCreate) a
 	for i, item := range toCreate {
 
 		var row []interface{}
-		dt := "2020.06.25"
+
+		layout := "02.01.2006"
 
 		if item.InclusionDate == "" {
 			row = []interface{}{item.Material, nil}
 		} else {
-			date, _ := time.Parse(dt, item.InclusionDate)
+			date, _ := time.Parse(layout, item.InclusionDate)
 			row = []interface{}{item.Material, date}
 		}
 
