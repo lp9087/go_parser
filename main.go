@@ -5,26 +5,26 @@ import (
 	"encoding/csv"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/jackc/pgx"
 	"golang.org/x/text/encoding/charmap"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
 
 const ExtremistMaterialBaseUrl = "https://minjust.gov.ru"
 
-type DBData struct {
-	Id       int
-	Material string
+type ExtremistMaterial struct {
+	ID            int
+	Material      string
+	InclusionDate *time.Time
 }
 
-type ToCreate struct {
-	Material      string
-	InclusionDate string
+func (ExtremistMaterial) TableName() string {
+	return "extremist_material"
 }
 
 func getRemoteExtremistMaterials(httpClient *http.Client) map[string]string {
@@ -35,79 +35,41 @@ func getRemoteExtremistMaterials(httpClient *http.Client) map[string]string {
 	return remoteData
 }
 
-func getDBExtremistMaterials(dbConfig *pgx.ConnConfig) map[string]int {
-
-	conn, err := pgx.Connect(*dbConfig)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
-	}
-
-	raws, erro := conn.Query("SELECT id, material from extremist_material")
-	if erro != nil {
-		fmt.Fprintf(os.Stderr, "QueryRow failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	materials := make(map[string]int)
-
-	for raws.Next() {
-		var r DBData
-		err := raws.Scan(&r.Id, &r.Material)
-		if err != nil {
-			log.Fatal(err)
-		}
-		materials[r.Material] = r.Id
-	}
-	if err := raws.Err(); err != nil {
-		log.Fatal(err)
-	}
-
-	return materials
-}
-
-func insertDBExtremistMaterials(dbConfig *pgx.ConnConfig, toCreate []ToCreate) any {
-
-	conn, err := pgx.Connect(*dbConfig)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-		os.Exit(1)
-	}
-
-	defer conn.Close()
-
-	copyFromTable := pgx.Identifier{"extremist_material"}
-	copyFromColumns := []string{"material", "inclusion_date"}
-
-	copyFromRows := make([][]interface{}, len(toCreate))
-
-	// Наполняем срез значениями
-	for i, item := range toCreate {
-
-		var row []interface{}
-
-		layout := "02.01.2006"
-
-		if item.InclusionDate == "" {
-			row = []interface{}{item.Material, nil}
-		} else {
-			date, _ := time.Parse(layout, item.InclusionDate)
-			row = []interface{}{item.Material, date}
-		}
-
-		copyFromRows[i] = row
-	}
-
-	copyCount, erro := conn.CopyFrom(
-		copyFromTable,
-		copyFromColumns,
-		pgx.CopyFromRows(copyFromRows),
-	)
-	if erro != nil {
+func getDBExtremistMaterials(dsn string) map[string]int {
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err == nil {
 		fmt.Println("error")
 	}
-	return copyCount
+	var extremistMaterials []ExtremistMaterial
+
+	db.Find(&extremistMaterials)
+
+	result := make(map[string]int)
+
+	for _, field := range extremistMaterials {
+		result[field.Material] = field.ID
+	}
+
+	return result
+}
+
+func insertDBExtremistMaterials(dsn string, toCreate []ExtremistMaterial) {
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err == nil {
+		fmt.Println("error")
+	}
+	db.CreateInBatches(&toCreate, len(toCreate))
+
+}
+
+func deleteDBExtremistMaterials(dsn string, toDelete []int) {
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err == nil {
+		fmt.Println("error")
+	}
+	var extremistMaterial ExtremistMaterial
+	db.Delete(&extremistMaterial, toDelete)
 
 }
 
@@ -187,14 +149,26 @@ func parseCSVFile(file []byte) map[string]string {
 	return results
 }
 
-func compareData(dbData map[string]int, remoteData map[string]string) ([]ToCreate, []int) {
-	var toCreate []ToCreate
+func compareData(dbData map[string]int, remoteData map[string]string) ([]ExtremistMaterial, []int) {
+	var toCreate []ExtremistMaterial
 	var toDelete []int
 
 	for material, inclusionDate := range remoteData {
 		_, ok := dbData[material]
 		if ok == false {
-			toCreate = append(toCreate, ToCreate{material, inclusionDate})
+
+			var row ExtremistMaterial
+
+			layout := "02.01.2006"
+
+			if inclusionDate == "" {
+				row = ExtremistMaterial{Material: material}
+			} else {
+				date, _ := time.Parse(layout, inclusionDate)
+				row = ExtremistMaterial{Material: material, InclusionDate: &date}
+			}
+
+			toCreate = append(toCreate, row)
 		}
 	}
 
@@ -207,23 +181,22 @@ func compareData(dbData map[string]int, remoteData map[string]string) ([]ToCreat
 	return toCreate, toDelete
 }
 
-func main() {
-	client := &http.Client{}
-	config := &pgx.ConnConfig{
-		Host:     "localhost",
-		Port:     5432,
-		User:     "rkn-dashboard-admin-user",
-		Password: "rkn-dashboard-admin-pass",
-		Database: "rkn-dashboard-admin-db",
-	}
-	dbData := getDBExtremistMaterials(config)
+func updateExtremistMaterials(client *http.Client, dbAddress string) {
+	dbData := getDBExtremistMaterials(dbAddress)
 	remote := getRemoteExtremistMaterials(client)
 
 	toCreate, toDelete := compareData(dbData, remote)
 
 	if len(toCreate) > 0 {
-		insertDBExtremistMaterials(config, toCreate)
+		insertDBExtremistMaterials(dbAddress, toCreate)
 	}
+	if len(toDelete) > 0 {
+		deleteDBExtremistMaterials(dbAddress, toDelete)
+	}
+}
 
-	println(toCreate, toDelete)
+func main() {
+	client := &http.Client{}
+	dsn := "host=localhost user=rkn-dashboard-admin-user password=rkn-dashboard-admin-pass dbname=rkn-dashboard-admin-db port=5432"
+	updateExtremistMaterials(client, dsn)
 }
