@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"github.com/joho/godotenv"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -70,7 +73,19 @@ func WaitSomeHours(hours int) {
 func main() {
 	log.Println("_____Запуск приложения_____")
 	client := &http.Client{}
-	dsn := "host=localhost user=rkn-dashboard-admin-user password=rkn-dashboard-admin-pass dbname=rkn-dashboard-admin-db port=5432"
+
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatalf("Ошибка сбора локальных переменных с .env файла. Текст ошибки: %s", err)
+	}
+
+	Host := os.Getenv("DB_HOST")
+	Port := os.Getenv("DB_PORT")
+	User := os.Getenv("DB_USER")
+	Password := os.Getenv("DB_PASSWORD")
+	Name := os.Getenv("DB_NAME")
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s", Host, User, Password, Name, Port)
 	for {
 		UpdateExtremistMaterials(client, dsn)
 		WaitSomeHours(6)
