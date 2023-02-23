@@ -27,20 +27,24 @@ func (ExtremistMaterial) TableName() string {
 	return "extremist_material"
 }
 
-func getRemoteExtremistMaterials(httpClient *http.Client) map[string]string {
+func getRemoteExtremistMaterials(httpClient *http.Client, channel chan map[string]string) {
+	log.Println("_____Начало получения данных со стороннего источника_____")
 	page := getRequest(httpClient, fmt.Sprintf("%s/extremist-materials/", ExtremistMaterialBaseUrl))
 	csvUrl := parseExtremistMaterialsPage(page)
 	csvFile := getRequest(httpClient, csvUrl)
 	remoteData := parseCSVFile(csvFile)
-	return remoteData
+	channel <- remoteData
 }
 
-func getDBExtremistMaterials(dsn string) map[string]int {
+func getDBExtremistMaterials(dsn string, channel chan map[string]int) {
+	log.Println("_____Подключаемся к БД_____")
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err == nil {
-		fmt.Println("error")
+	if err != nil {
+		log.Fatalf("Ошибка подключения к БД. Текст ошибки: %s", err)
 	}
 	var extremistMaterials []ExtremistMaterial
+
+	log.Println("_____Поиск записей в БД_____")
 
 	db.Find(&extremistMaterials)
 
@@ -49,50 +53,55 @@ func getDBExtremistMaterials(dsn string) map[string]int {
 	for _, field := range extremistMaterials {
 		result[field.Material] = field.ID
 	}
-
-	return result
+	channel <- result
 }
 
 func insertDBExtremistMaterials(dsn string, toCreate []ExtremistMaterial) {
+	log.Println("_____Запись в БД_____")
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err == nil {
-		fmt.Println("error")
+	if err != nil {
+		log.Fatalf("Ошибка подключения к БД при попытке записи. Текст ошибки: %s", err)
 	}
 	db.CreateInBatches(&toCreate, len(toCreate))
+	log.Println("_____Окончание записи в БД_____")
 
 }
 
 func deleteDBExtremistMaterials(dsn string, toDelete []int) {
-
+	log.Println("_____Удаление из БД_____")
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err == nil {
-		fmt.Println("error")
+	if err != nil {
+		log.Fatalf("Ошибка подключения к БД при попытке удаления. Текст ошибки: %s", err)
 	}
 	var extremistMaterial ExtremistMaterial
 	db.Delete(&extremistMaterial, toDelete)
-
+	log.Println("_____Окончание удаления из БД_____")
 }
 
 func getRequest(c *http.Client, url string) []byte {
-
-	req, err := http.NewRequest("GET", url, nil)
+	log.Printf("_____Запрос на сервис %s _____", url)
+	req, reqErr := http.NewRequest("GET", url, nil)
+	if reqErr != nil {
+		log.Fatalf("Ошибка формирования запроса на url, %s. Текст ошибки: %s", url, reqErr)
+	}
 	req.Header.Add("User-Agent", `MY_AGENT`)
 	resp, err := c.Do(req)
 	if err != nil {
-		fmt.Println("Err is", err)
+		log.Fatalf("Ошибка выполнения запроса на url, %s. Текст ошибки: %s", url, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("Err is", err)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		log.Fatalf("Ошибка обработки ответа с url, %s. Текст ошибки: %s", url, readErr)
 	}
 	return body
 }
 
 func parseExtremistMaterialsPage(page []byte) string {
+	log.Println("_____Парсинг xml страницы_____")
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page))
 	if err != nil {
-		log.Fatal("Error loading HTTP response body. ", err)
+		log.Fatalf("Ошибка формирования xml из HTML страницы. Текст ошибки %s", err)
 	}
 
 	var urlPart string
@@ -100,7 +109,6 @@ func parseExtremistMaterialsPage(page []byte) string {
 	doc.Find("a").EachWithBreak(func(i int, s *goquery.Selection) bool {
 		href, exists := s.Attr("href")
 		if exists && strings.Contains(href, ".csv") {
-			// Process href here
 			urlPart = href
 			return false
 		}
@@ -111,24 +119,21 @@ func parseExtremistMaterialsPage(page []byte) string {
 }
 
 func parseCSVFile(file []byte) map[string]string {
-	// Read the response body into a byte slice.
+	log.Println("_____Парсинг csv файла_____")
 	data, err := io.ReadAll(bytes.NewReader(file))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Ошибка формирования чтения XML. Текст ошибки %s", err)
 	}
 
-	// Decode the byte slice into a UTF-8 string.
 	decoder := charmap.Windows1251.NewDecoder()
 	utf8Str, err := decoder.String(string(data))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Ошибка кодировки XML. Текст ошибки %s", err)
 	}
 
 	reader := csv.NewReader(strings.NewReader(utf8Str))
 	reader.Comma = ';'
 	reader.LazyQuotes = true
-
-	//records, err := reader.ReadAll()
 
 	results := make(map[string]string)
 
@@ -139,10 +144,8 @@ func parseCSVFile(file []byte) map[string]string {
 		}
 		if err != nil {
 			break
-			//return nil, err
 		}
 
-		// add record to result set
 		record[1] = strings.ReplaceAll(record[1], "\"", "'")
 		results[record[1]] = record[2]
 	}
@@ -150,6 +153,7 @@ func parseCSVFile(file []byte) map[string]string {
 }
 
 func compareData(dbData map[string]int, remoteData map[string]string) ([]ExtremistMaterial, []int) {
+	log.Println("_____Сравнение данных из БД и стороннего ресурса_____")
 	var toCreate []ExtremistMaterial
 	var toDelete []int
 
@@ -182,21 +186,39 @@ func compareData(dbData map[string]int, remoteData map[string]string) ([]Extremi
 }
 
 func updateExtremistMaterials(client *http.Client, dbAddress string) {
-	dbData := getDBExtremistMaterials(dbAddress)
-	remote := getRemoteExtremistMaterials(client)
+	log.Println("_____Получение данных из источников_____")
+
+	dbMaterials := make(chan map[string]int)
+	remoteMaterials := make(chan map[string]string)
+
+	go getDBExtremistMaterials(dbAddress, dbMaterials)
+	go getRemoteExtremistMaterials(client, remoteMaterials)
+
+	dbData := <-dbMaterials
+	remote := <-remoteMaterials
 
 	toCreate, toDelete := compareData(dbData, remote)
 
 	if len(toCreate) > 0 {
-		insertDBExtremistMaterials(dbAddress, toCreate)
+		go insertDBExtremistMaterials(dbAddress, toCreate)
 	}
 	if len(toDelete) > 0 {
-		deleteDBExtremistMaterials(dbAddress, toDelete)
+		go deleteDBExtremistMaterials(dbAddress, toDelete)
 	}
 }
 
+func waitSomeHours(hours int) {
+	log.Printf("_____Ожидание %v часов_____", hours)
+	time.Sleep(time.Duration(hours) * time.Hour)
+	log.Printf("_____Окончание ожидания %v часов_____", hours)
+}
+
 func main() {
+	log.Println("_____Запуск приложения_____")
 	client := &http.Client{}
 	dsn := "host=localhost user=rkn-dashboard-admin-user password=rkn-dashboard-admin-pass dbname=rkn-dashboard-admin-db port=5432"
-	updateExtremistMaterials(client, dsn)
+	for {
+		updateExtremistMaterials(client, dsn)
+		waitSomeHours(6)
+	}
 }
